@@ -1,0 +1,15 @@
+# Ignore SQLite database files
+*.sqlite3
+*.db
+*.def
+*.exe
+*.dll
+
+# Ignore Node dependencies
+node_modules/
+
+# Ignore environment variable files
+.env
+
+# Ignore logs
+*.log
