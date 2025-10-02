@@ -2,14 +2,20 @@ const express = require("express");
 const sqlite3 = require("sqlite3").verbose();
 const cors = require("cors");
 
+// Firebase Auth
+const admin = require("firebase-admin");
+const serviceAccount = "./service-account-private.json";
+
 // Create Express Instance
 const app = express();
 // Allow frontend connection
 app.use(cors());
 // Allow JSON interactions
 app.use(express.json());
-
-let id;
+// Initalize Firebase Connection
+admin.initializeApp({
+  credential: admin.credential.cert(serviceAccount),
+});
 
 // Connect to Sqlite3 DB (test.db)
 const db = new sqlite3.Database("./test.db", (err) => {
@@ -19,6 +25,72 @@ const db = new sqlite3.Database("./test.db", (err) => {
     console.log("Connected to SQlite3 DB!");
   }
 });
+
+// Test Firebase Auth via IDToken
+app.post("/api/auth/firebase-login", async (req, res) => {
+  const { idToken } = req.body;
+
+  if (!idToken) {
+    return res.status(400).json({ error: "ID Token Missing" });
+  }
+
+  try {
+    // Check user IDToken against Firebase Auth
+    const decodedToken = await admin.auth().verifyIdToken(idToken);
+    const { uid, email, displayName, photoURL } = decodedToken;
+    console.log(decodedToken);
+
+    // Local DB check, must implement
+    let member = await findMemberByUid(uid);
+
+    // If does not exist in Local DB, create new profile
+    if (!member) {
+      member = await createMember({
+        uid,
+        email,
+        name: displayName,
+        photoURL: photoURL,
+      });
+      console.log(member);
+    }
+    return res.json(member);
+
+  } catch (err) {
+
+    console.error("Firebase token verification failed:", err);
+
+    return res.status(401).json({ error: "Invalid ID Token" });
+  }
+});
+
+// Check local DB for member during verification
+async function findMemberByUid(uid) {
+  if (!uid) return null;
+  const query = `SELECT * FROM members WHERE firebaseUid = ?`;
+  const member = await db.get(query, [uid]);
+  return member || null;
+}
+
+async function createMember(memberData) {
+  return new Promise((resolve, reject) => {
+    db.run(
+      `INSERT INTO members (name, email, photoUrl, firebaseUid) VALUES (?, ?, ?, ?)`,
+      [memberData.name || "", memberData.email || "", memberData.photoURL, memberData.uid],
+      function (err) {
+        if (err) return reject(err);
+        // Doing this to have access to most recently added member detail, this.lastID is the most recent rowID added to table
+        db.get(
+          `SELECT * FROM members WHERE id = ?`,
+          [this.lastID],
+          (err, row) => {
+            if (err) return reject(err);
+            resolve(row);
+          }
+        );
+      }
+    );
+  });
+}
 
 // Test Route
 app.get("/", (req, res) => {
@@ -39,21 +111,20 @@ app.get("/members", (req, res) => {
 });
 
 app.get("/members/:id", (req, res) => {
+  const id = req.params.id;
 
-    const id = req.params.id
-
-    db.get("SELECT * FROM members WHERE id = ?", [id], (err, row) => {
-        if (err) {
-            res.status(500).json({ error: err.message });
-            return;
-        }
-        if (!row) {
-            res.status(404).json({ error: "Member not found" });
-            return;
-        }
-        res.json(row);
-    })
-})
+  db.get("SELECT * FROM members WHERE id = ?", [id], (err, row) => {
+    if (err) {
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    if (!row) {
+      res.status(404).json({ error: "Member not found" });
+      return;
+    }
+    res.json(row);
+  });
+});
 
 // Get all rows from 'books' table
 // Creates new endpoint at /books
@@ -69,22 +140,21 @@ app.get("/books", (req, res) => {
 });
 
 app.get("/books/:id", (req, res) => {
+  // Not passing in query string, passing as parameter for get vs all!
+  const id = req.params.id;
 
-    // Not passing in query string, passing as parameter for get vs all!
-    const id = req.params.id
-
-    db.get("SELECT * FROM books WHERE id = ?", [id], (err, row) => {
-        if (err) {
-            res.status(500).json({ error: err.message });
-            return;
-        }
-        if (!row) {
-            res.status(404).json({ error: "Book not found" });
-            return;
-        }
-        res.json(row);
-    })
-})
+  db.get("SELECT * FROM books WHERE id = ?", [id], (err, row) => {
+    if (err) {
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    if (!row) {
+      res.status(404).json({ error: "Book not found" });
+      return;
+    }
+    res.json(row);
+  });
+});
 
 app.post("/members", (req, res) => {
   const { name, role, team, email, location, joinDate, photoUrl, status } =
@@ -119,7 +189,8 @@ app.post("/members", (req, res) => {
 });
 
 app.post("/books", (req, res) => {
-  const { olid, title, author, description, published, imageUrl, pages, isbn } = req.body;
+  const { olid, title, author, description, published, imageUrl, pages, isbn } =
+    req.body;
   console.log("Recieved POST body: ", req.body);
 
   if (!title) {
@@ -128,7 +199,16 @@ app.post("/books", (req, res) => {
 
   db.run(
     "INSERT INTO books (olid, title, author, description, published, imageUrl, pages, isbn) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-    [olid || "", title || "", author || "", description || "", published || "", imageUrl || "", pages || "", isbn || ""],
+    [
+      olid || "",
+      title || "",
+      author || "",
+      description || "",
+      published || "",
+      imageUrl || "",
+      pages || "",
+      isbn || "",
+    ],
     function (err) {
       if (err) {
         console.error("DB Insert Error: ", err.message);
@@ -140,9 +220,9 @@ app.post("/books", (req, res) => {
   );
 });
 
-// OpenLibrary Testing 
+// OpenLibrary Testing
 // Get book detail from /works/OLXXXXXX
-app.get('/api/books/works/:id', async (req, res) => {
+app.get("/api/books/works/:id", async (req, res) => {
   const { id } = req.params;
 
   if (!id) {
@@ -156,19 +236,20 @@ app.get('/api/books/works/:id', async (req, res) => {
     // Response Data to handle as JSON
     const bookDetail = await openLibraryResponse.json();
 
-    // Get Author Data as not plaintext in Book Detail 
+    // Get Author Data as not plaintext in Book Detail
     if (bookDetail.authors && bookDetail.authors.length > 0) {
-        const authorPromises = bookDetail.authors.map(a => 
-            fetch(`https://openlibrary.org${a.author.key}.json`).then(r => r.json())
-        );
+      const authorPromises = bookDetail.authors.map((a) =>
+        fetch(`https://openlibrary.org${a.author.key}.json`).then((r) =>
+          r.json()
+        )
+      );
 
-        bookDetail.fullAuthors = await Promise.all(authorPromises);
-    } else { 
-        bookDetail.fullAuthors = [];
+      bookDetail.fullAuthors = await Promise.all(authorPromises);
+    } else {
+      bookDetail.fullAuthors = [];
     }
 
     res.json(bookDetail);
-    
   } catch (err) {
     console.error("Error fetching API data:", err);
     res.status(500).json({ error: "Failed to fetch data" });
@@ -176,7 +257,7 @@ app.get('/api/books/works/:id', async (req, res) => {
 });
 
 // Get edition detail from /works/OLXXXXXX/edition.json
-app.get('/api/books/works/:id/editions.json', async (req, res) => {
+app.get("/api/books/works/:id/editions.json", async (req, res) => {
   const { id } = req.params;
 
   if (!id) {
@@ -191,7 +272,6 @@ app.get('/api/books/works/:id/editions.json', async (req, res) => {
     const editionDetail = await openLibraryResponse.json();
 
     res.json(editionDetail);
-    
   } catch (err) {
     console.error("Error fetching API data:", err);
     res.status(500).json({ error: "Failed to fetch data" });

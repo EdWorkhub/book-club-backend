@@ -13,3 +13,6 @@ node_modules/
 
 # Ignore logs
 *.log
+
+# Ignore Firebase Service Details 
+service-account-private.json
