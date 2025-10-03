@@ -28,6 +28,7 @@ const db = new sqlite3.Database("./test.db", (err) => {
 
 // Test Firebase Auth via IDToken
 app.post("/api/auth/firebase-login", async (req, res) => {
+  console.log("In Backend");
   const { idToken } = req.body;
 
   if (!idToken) {
@@ -37,45 +38,51 @@ app.post("/api/auth/firebase-login", async (req, res) => {
   try {
     // Check user IDToken against Firebase Auth
     const decodedToken = await admin.auth().verifyIdToken(idToken);
-    const { uid, email, displayName, photoURL } = decodedToken;
-    console.log(decodedToken);
+    const { uid, email, name, picture } = decodedToken;
+    console.log(decodedToken.uid, decodedToken.email, decodedToken.name, decodedToken.picture);
 
     // Local DB check, must implement
     let member = await findMemberByUid(uid);
 
     // If does not exist in Local DB, create new profile
     if (!member) {
+      console.log("User not found, creating new user");
       member = await createMember({
         uid,
         email,
-        name: displayName,
-        photoURL: photoURL,
+        name,
+        // Mismatched Firebase and DB val 
+        photoUrl: picture
       });
-      console.log(member);
     }
+    console.log(member.uid, member.email, member.name, member.photoUrl, member.picture);
     return res.json(member);
-
   } catch (err) {
-
     console.error("Firebase token verification failed:", err);
-
     return res.status(401).json({ error: "Invalid ID Token" });
   }
 });
 
 // Check local DB for member during verification
 async function findMemberByUid(uid) {
-  if (!uid) return null;
   const query = `SELECT * FROM members WHERE firebaseUid = ?`;
   const member = await db.get(query, [uid]);
-  return member || null;
-}
+  if (!member || !member.firebaseUid) {
+    return null
+  }
+  return member;
+  }
 
 async function createMember(memberData) {
   return new Promise((resolve, reject) => {
     db.run(
       `INSERT INTO members (name, email, photoUrl, firebaseUid) VALUES (?, ?, ?, ?)`,
-      [memberData.name || "", memberData.email || "", memberData.photoURL, memberData.uid],
+      [
+        memberData.name || "",
+        memberData.email || "",
+        memberData.photoUrl,
+        memberData.uid,
+      ],
       function (err) {
         if (err) return reject(err);
         // Doing this to have access to most recently added member detail, this.lastID is the most recent rowID added to table
@@ -91,6 +98,7 @@ async function createMember(memberData) {
     );
   });
 }
+
 
 // Test Route
 app.get("/", (req, res) => {
