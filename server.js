@@ -1,6 +1,7 @@
 const express = require("express");
 const sqlite3 = require("sqlite3").verbose();
 const cors = require("cors");
+const { promisify } = require('util');
 
 // Firebase Auth
 const admin = require("firebase-admin");
@@ -26,6 +27,11 @@ const db = new sqlite3.Database("./test.db", (err) => {
   }
 });
 
+// Allow async db callbacks as promises 
+const getAsync = promisify(db.get.bind(db));
+
+let lastMember;
+
 // Test Firebase Auth via IDToken
 app.post("/api/auth/firebase-login", async (req, res) => {
   console.log("In Backend");
@@ -39,9 +45,14 @@ app.post("/api/auth/firebase-login", async (req, res) => {
     // Check user IDToken against Firebase Auth
     const decodedToken = await admin.auth().verifyIdToken(idToken);
     const { uid, email, name, picture } = decodedToken;
-    console.log(decodedToken.uid, decodedToken.email, decodedToken.name, decodedToken.picture);
+    console.log(
+      decodedToken.uid,
+      decodedToken.email,
+      decodedToken.name,
+      decodedToken.picture
+    );
 
-    // Local DB check, must implement
+    // Local DB check
     let member = await findMemberByUid(uid);
 
     // If does not exist in Local DB, create new profile
@@ -51,12 +62,12 @@ app.post("/api/auth/firebase-login", async (req, res) => {
         uid,
         email,
         name,
-        // Mismatched Firebase and DB val 
-        photoUrl: picture
+        // Mismatched Firebase and DB val
+        photoUrl: picture,
       });
+    } else {
+      return res.json(member);
     }
-    console.log(member.uid, member.email, member.name, member.photoUrl, member.picture);
-    return res.json(member);
   } catch (err) {
     console.error("Firebase token verification failed:", err);
     return res.status(401).json({ error: "Invalid ID Token" });
@@ -66,12 +77,13 @@ app.post("/api/auth/firebase-login", async (req, res) => {
 // Check local DB for member during verification
 async function findMemberByUid(uid) {
   const query = `SELECT * FROM members WHERE firebaseUid = ?`;
-  const member = await db.get(query, [uid]);
+  const member = await getAsync(query, [uid]);
+  console.dir(member, { depth: null, colors: true });
   if (!member || !member.firebaseUid) {
-    return null
+    return null;
   }
   return member;
-  }
+}
 
 async function createMember(memberData) {
   return new Promise((resolve, reject) => {
@@ -92,13 +104,13 @@ async function createMember(memberData) {
           (err, row) => {
             if (err) return reject(err);
             resolve(row);
-          }
+          },
+          (this.lastMember = this.lastID)
         );
       }
     );
   });
 }
-
 
 // Test Route
 app.get("/", (req, res) => {
@@ -162,6 +174,22 @@ app.get("/books/:id", (req, res) => {
     }
     res.json(row);
   });
+});
+
+app.get("/member_books/:id", (req, res) => {
+  const id = req.params.id;
+  db.all(
+    "SELECT b.* FROM books b INNER JOIN member_books mb ON b.id = mb.book_id WHERE mb.member_id = ?",
+    [id],
+    (err, row) => {
+      if (err) {
+        console.error(err);
+        return;
+      }
+      console.log(row);
+      res.json(row);
+    }
+  );
 });
 
 app.post("/members", (req, res) => {
