@@ -1,7 +1,7 @@
 const express = require("express");
 const sqlite3 = require("sqlite3").verbose();
 const cors = require("cors");
-const { promisify } = require('util');
+const { promisify } = require("util");
 
 // Firebase Auth
 const admin = require("firebase-admin");
@@ -27,12 +27,10 @@ const db = new sqlite3.Database("./test.db", (err) => {
   }
 });
 
-// Allow async db callbacks as promises 
+// Allow async db callbacks as promises
 const getAsync = promisify(db.get.bind(db));
 
-let lastMember;
-
-// Test Firebase Auth via IDToken
+// Firebase Init and Login
 app.post("/api/auth/firebase-login", async (req, res) => {
   console.log("In Backend");
   const { idToken } = req.body;
@@ -117,8 +115,7 @@ app.get("/", (req, res) => {
   res.send("Backend connected!");
 });
 
-// Get all rows from 'members' tables
-// Creates new endpoint at /members
+// GET ALL Members
 app.get("/members", (req, res) => {
   db.all("SELECT * FROM members", [], (err, rows) => {
     if (err) {
@@ -130,9 +127,25 @@ app.get("/members", (req, res) => {
   });
 });
 
+// GET Member by FirebaseUid
 app.get("/members/:id", (req, res) => {
   const id = req.params.id;
+  db.get("SELECT * FROM members WHERE firebaseUid = ?", [id], (err, row) => {
+    if (err) {
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    if (!row) {
+      res.status(404).json({ error: "Member not found" });
+      return;
+    }
+    res.json(row);
+  });
+});
 
+// GET Member by local id
+app.get("/local-members/:id", (req, res) => {
+  const id = req.params.id;
   db.get("SELECT * FROM members WHERE id = ?", [id], (err, row) => {
     if (err) {
       res.status(500).json({ error: err.message });
@@ -146,8 +159,7 @@ app.get("/members/:id", (req, res) => {
   });
 });
 
-// Get all rows from 'books' table
-// Creates new endpoint at /books
+// GET All Books
 app.get("/books", (req, res) => {
   db.all("SELECT * FROM books", [], (err, rows) => {
     if (err) {
@@ -159,6 +171,7 @@ app.get("/books", (req, res) => {
   });
 });
 
+// GET Book by ID 
 app.get("/books/:id", (req, res) => {
   // Not passing in query string, passing as parameter for get vs all!
   const id = req.params.id;
@@ -176,6 +189,7 @@ app.get("/books/:id", (req, res) => {
   });
 });
 
+// GET Member Currently Reading Books List 
 app.get("/member_books/:id", (req, res) => {
   const id = req.params.id;
   db.all(
@@ -192,6 +206,180 @@ app.get("/member_books/:id", (req, res) => {
   );
 });
 
+// GET Member Reading History List 
+app.get("/member_books_history/:id", (req, res) => {
+  const id = req.params.id;
+  db.all(
+    "SELECT b.* FROM books b INNER JOIN member_books_history mbh ON b.id = mbh.book_id WHERE mbh.member_id = ?",
+    [id],
+    (err, row) => {
+      if (err) {
+        console.error(err);
+        return;
+      }
+      console.log(row);
+      res.json(row);
+    }
+  );
+});
+
+// GET Member Reported On Books (ever had report submitted against by Member)
+app.get("/member_reported_books/:id", (req, res) => {
+  const id = req.params.id;
+  db.all(
+    "SELECT b.* FROM books b INNER JOIN book_reports br ON b.id = br.book_id WHERE br.member_id = ?",
+    [id],
+    (err, row) => {
+      if (err) {
+        console.error(err);
+        return;
+      }
+      console.log(row);
+      res.json(row);
+    }
+  );
+});
+
+// POST Move from Currently Reading to Reading History (clones current row from member_books into member_books_history then deletes original row) 
+app.post("/move-to-read", (req, res) => {
+  const { bookId, memberId } = req.body;
+
+  db.serialize(() => {
+    db.run("BEGIN TRANSACTION;");
+
+    db.run(
+      `INSERT OR IGNORE INTO member_books_history (book_id,   member_id)
+       SELECT book_id, member_id
+       FROM member_books
+       WHERE book_id = ? AND member_id = ?`,
+      [bookId, memberId]
+    );
+
+    db.run(
+      `DELETE FROM member_books
+       WHERE book_id = ? AND member_id = ?`,
+      [bookId, memberId],
+      function (err) {
+        if (err) {
+          db.run("ROLLBACK;");
+          return res.status(500).send(err.message);
+        }
+        db.run("COMMIT;");
+        res.send({ success: true });
+      }
+    );
+  });
+});
+
+// GET All Book Reports
+app.get("/book_reports", (req, res) => {
+  db.all("SELECT * FROM book_reports_json", [], (err, rows) => {
+    if (err) {
+      res.status(500).json({ error: err.message });
+      return;
+    }
+    console.log(rows);
+    res.json(rows);
+  });
+});
+
+// GET All Book Reports by Book ID 
+app.get("/book_reports/:id", (req, res) => {
+  const id = req.params.id;
+  db.all(
+    "SELECT * FROM book_reports_json WHERE book_id = ?",
+    [id],
+    (err, rows) => {
+      if (err) {
+        res.status(500).json({ error: err.message });
+        return;
+      }
+      console.log(rows);
+      res.json(rows);
+    }
+  );
+});
+
+// GET All Book Reports by Member ID 
+app.get("/book_reports/:memberid", (req, res) => {
+  const memberid = req.params.id;
+  db.all(
+    "SELECT * FROM book_reports_json WHERE member_id = ?",
+    [memberid],
+    (err, rows) => {
+      if (err) {
+        res.status(500).json({ error: err.message });
+        return;
+      }
+      console.log(rows);
+      res.json(rows);
+    }
+  );
+});
+
+
+// POST New Book Report 
+app.post("/book_reports", (req, res) => {
+  const { answers, bookId, memberId } = req.body;
+
+  db.run(
+    "INSERT INTO book_reports (book_id, member_id) VALUES (?, ?)",
+    [bookId, memberId],
+    function (err) {
+      if (err) return res.status(500).json({ error: err.message });
+
+      const reportId = this.lastID; // ID of the new report
+
+      const stmt = db.prepare(
+        "INSERT INTO book_report_answers (report_id, question, answer) VALUES (?, ?, ?)"
+      );
+
+      for (const { question, answer } of answers) {
+        stmt.run(reportId, question, answer);
+      }
+      stmt.finalize((err2) => {
+        if (err2) return res.status(500).json({ error: err2.message });
+        res.status(201).json({ message: "Report saved", reportId });
+      });
+    }
+  );
+});
+
+// POST Add Book to Member Currently Reading 
+app.post("/member_books", (req, res) => {
+  const { bookId, memberUid } = req.body;
+  console.log("Receieved POST body: ", req.body);
+
+  db.serialize(() => {
+    db.run("BEGIN TRANSACTION;");
+
+    db.run(
+      "DELETE FROM member_books_history WHERE book_id = ? and member_id = ?",
+      [bookId, memberUid],
+      function (err) {
+        if (err) {
+          console.error("DB Insert Error: ", err.message);
+          return res.status(500).json({ error: err.message });
+        }
+      }
+    )
+  })
+
+  db.run(
+    "INSERT INTO member_books (book_id, member_id) VALUES (?, ?)", 
+    [bookId, memberUid],
+    function (err) {
+        if (err) {
+          db.run("ROLLBACK;");
+          return res.status(500).send(err.message);
+        }
+        db.run("COMMIT;");
+        res.send({ success: true });
+      }
+  );
+});
+
+// POST Add New Member
 app.post("/members", (req, res) => {
   const { name, role, team, email, location, joinDate, photoUrl, status } =
     req.body;
@@ -224,6 +412,7 @@ app.post("/members", (req, res) => {
   );
 });
 
+// POST Add New Book to Library
 app.post("/books", (req, res) => {
   const { olid, title, author, description, published, imageUrl, pages, isbn } =
     req.body;
@@ -256,8 +445,9 @@ app.post("/books", (req, res) => {
   );
 });
 
-// OpenLibrary Testing
-// Get book detail from /works/OLXXXXXX
+/////// OpenLibrary API ///////
+
+// GET Book Detail from /works/OLXXXXXX
 app.get("/api/books/works/:id", async (req, res) => {
   const { id } = req.params;
 
@@ -292,7 +482,7 @@ app.get("/api/books/works/:id", async (req, res) => {
   }
 });
 
-// Get edition detail from /works/OLXXXXXX/edition.json
+// GET Edition Detail from /works/OLXXXXXX/edition.json
 app.get("/api/books/works/:id/editions.json", async (req, res) => {
   const { id } = req.params;
 
@@ -314,10 +504,7 @@ app.get("/api/books/works/:id/editions.json", async (req, res) => {
   }
 });
 
-// Get book detail from /works
-
-// New endpoint at /api/books
-// Generic q Search
+// GET Q Search Results 
 app.get("/api/books", async (req, res) => {
   // Query should be text passed in whatever format from search
   const { search, title, author } = req.query;
